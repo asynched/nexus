@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+  <title>nexus</title>
+  <rect width="48" height="48" rx="12" fill="#173e35"/>
+  <path d="M12 34V17a3 3 0 0 1 3-3h4v20Zm17 0V14h7v17a3 3 0 0 1-3 3Z" fill="#f4f7ec"/>
+  <path d="M15 14h8l13 20h-8Z" fill="#c9e88e"/>
+</svg>

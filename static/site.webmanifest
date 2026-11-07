@@ -1,0 +1,22 @@
+{
+	"id": "/",
+	"name": "nexus",
+	"short_name": "nexus",
+	"description": "A web, sem distrações. Pesquisa independente com SearXNG.",
+	"lang": "pt-BR",
+	"start_url": "/",
+	"scope": "/",
+	"display": "standalone",
+	"theme_color": "#173e35",
+	"background_color": "#fafbf7",
+	"icons": [
+		{ "src": "/brand/nexus-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+		{ "src": "/brand/nexus-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+		{
+			"src": "/brand/nexus-maskable-512.png",
+			"sizes": "512x512",
+			"type": "image/png",
+			"purpose": "maskable"
+		}
+	]
+}
