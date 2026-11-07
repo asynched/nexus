@@ -1,0 +1,5 @@
+node_modules
+.svelte-kit
+bun.lock
+test-results
+playwright-report
