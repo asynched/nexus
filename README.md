@@ -82,9 +82,55 @@ Para formatar: `bun run format`.
 
 ## Produção
 
+O app usa `@sveltejs/adapter-bun` e requer **Bun 1.4 ou superior**. O script de build força a execução do Vite em Bun, como exigido pelo adapter. `preview` é apenas para inspeção local; o processo de produção é `start`.
+
 ```sh
 bun run build
-bun run preview
+HOST=0.0.0.0 PORT=3000 SEARXNG_URL=https://search.asynched.tech/ bun run start
 ```
 
-O scaffold usa `adapter-auto`. Para hospedar em um servidor Node próprio, configure `@sveltejs/adapter-node`; para Vercel, use o adapter correspondente. É necessário um runtime de servidor, pois a pesquisa usa `+page.server.ts` (não é um site puramente estático).
+### Docker
+
+O `Dockerfile` usa etapas separadas de instalação, build e runtime. A imagem final roda como usuário **não root** (`bun`), contém apenas o build, `package.json` e dependências de produção, e inclui healthcheck. As imagens oficiais Bun 1.4.3 são fixadas por digest e suportam builds nativos em amd64 e arm64. `.env`, `.git`, configurações locais, caches e resultados de testes não entram no contexto de build.
+
+```sh
+docker build -t nexus:local .
+docker run --rm --name nexus --stop-timeout 35 \
+  -p 127.0.0.1:3000:3000 \
+  -e SEARXNG_URL=https://search.asynched.tech/ \
+  nexus:local
+```
+
+Abra `http://localhost:3000`. A URL do SearXNG é lida **quando o container inicia**, não no build: a mesma imagem pode ser usada com instâncias diferentes. A porta interna padrão é `3000`. Não é preciso publicar a imagem em um registry para executar na VPS.
+
+Com Docker Compose, a configuração do `.env` é passada ao container, sem copiar esse arquivo para a imagem:
+
+```sh
+cp .env.example .env
+docker compose up -d --build
+docker compose ps
+docker compose logs -f nexus
+```
+
+Por segurança, os exemplos publicam a porta apenas em `127.0.0.1`. Na VPS, use um proxy reverso para HTTPS. Se precisar de acesso direto pela rede, defina `NEXUS_BIND_ADDRESS=0.0.0.0` para o Compose e configure o firewall; `NEXUS_PORT` altera somente a porta publicada no host.
+
+O endpoint `GET /healthz` retorna `{"status":"ok"}` sem consultar buscadores externos. Assim, uma falha temporária do SearXNG não marca o processo da interface como indisponível. O adapter recebe `SIGTERM` e encerra o servidor de forma controlada.
+
+### Coolify com Dockerfile
+
+1. Conecte o repositório e a branch `main`.
+2. Selecione o build pack **Dockerfile**, diretório base `/` e arquivo `/Dockerfile`.
+3. Use a porta interna `3000` e configure o domínio/HTTPS no proxy do Coolify.
+4. Defina `SEARXNG_URL` como variável de **runtime**, não como argumento de build.
+5. Habilite o healthcheck HTTP com caminho `/healthz` e faça o deploy.
+
+O Coolify constrói a imagem na VPS. Não selecione site estático: a pesquisa precisa do servidor SvelteKit. Os headers `PROTOCOL_HEADER` e `HOST_HEADER` só devem ser configurados se houver um proxy confiável que controle os headers encaminhados; consulte a [documentação do adapter](https://svelte.dev/docs/kit/adapter-bun).
+
+### Testar o artefato de produção
+
+```sh
+bun run build
+bun run test:production
+```
+
+O smoke test cria um diretório temporário, instala apenas dependências de produção, inicia `bun ./build` e verifica SSR, assets, cache imutável, healthcheck e `SEARXNG_URL` em runtime com uma instância de teste local. Ele não precisa de Docker, mas **não substitui** `docker build` e um teste do container no ambiente de destino.

@@ -2,6 +2,10 @@
 	"name": "nexus",
 	"version": "0.0.1",
 	"private": true,
+	"packageManager": "bun@1.4.3",
+	"engines": {
+		"bun": ">=1.4.0"
+	},
 	"type": "module",
 	"imports": {
 		"#lib": "./src/lib/index.js",
@@ -9,7 +13,8 @@
 	},
 	"scripts": {
 		"dev": "vite dev",
-		"build": "vite build",
+		"build": "bun --bun run vite build",
+		"start": "bun ./build",
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
@@ -18,12 +23,13 @@
 		"brand:generate": "bun scripts/generate-brand.ts",
 		"test:unit": "vitest",
 		"test": "bun run test:unit --run && bun run test:e2e",
-		"test:e2e": "playwright test"
+		"test:e2e": "playwright test",
+		"test:production": "bun scripts/smoke-production.ts"
 	},
 	"devDependencies": {
 		"@axe-core/playwright": "^4.14.0",
 		"@playwright/test": "^1.60.0",
-		"@sveltejs/adapter-auto": "^8.0.0",
+		"@sveltejs/adapter-bun": "^1.0.0",
 		"@sveltejs/kit": "^3.0.0",
 		"@sveltejs/vite-plugin-svelte": "^7.2.0",
 		"@tailwindcss/vite": "^4.3.0",
