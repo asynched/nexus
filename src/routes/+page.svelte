@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, untrack } from 'svelte';
+	import { onMount, untrack, tick } from 'svelte';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { navigating } from '$app/state';
 	import {
@@ -32,6 +32,7 @@
 	import Favicon from '#lib/components/Favicon.svelte';
 	import BrandMark from '#lib/components/BrandMark.svelte';
 	import AppearancePanel from '#lib/components/AppearancePanel.svelte';
+	import AiAnswer from '#lib/components/AiAnswer.svelte';
 	import { useAppearance } from '#lib/appearance.svelte.ts';
 	import { brand } from '#lib/brand.ts';
 	import {
@@ -50,6 +51,7 @@
 	let settings: HTMLDialogElement;
 	let about: HTMLDialogElement;
 	let appearanceDialog: HTMLDialogElement;
+	let aiAnswer = $state<AiAnswer>();
 	const appearance = useAppearance();
 	const dark = $derived(appearance.dark);
 	let tools = $state(false);
@@ -108,6 +110,15 @@
 	}
 	function removeFilter(key: keyof SearchFilters) {
 		return { ...currentFilters, [key]: defaultFilters(data.preferences)[key] };
+	}
+	async function startAgentSearch() {
+		if (!query.trim()) {
+			input.focus();
+			return;
+		}
+		await goto(searchUrl(query.trim()));
+		await tick();
+		await aiAnswer?.run('agent');
 	}
 
 	function keyboard(event: KeyboardEvent) {
@@ -291,6 +302,12 @@
 						><CornerDownLeft size={12} /> Enter para pesquisar</span
 					>
 				</div>
+				{#if data.ai.agent && (category === 'general' || category === 'news')}
+					<button class="home-agent-button" onclick={startAgentSearch} disabled={busy}
+						>Pesquisar com agente <ArrowUpRight size={13} /></button
+					>
+					<small class="home-agent-note">Envia a consulta e trechos ao provedor de IA.</small>
+				{/if}
 				{#if tools}<div id="home-filters" class="home-filter-panel">
 						<FilterPanel
 							filters={currentFilters}
@@ -366,6 +383,13 @@
 				</div>{/if}
 			<div class="results-body" class:is-searching={busy} aria-busy={busy}>
 				<h1 class="sr-only">Resultados para {data.q}</h1>
+				{#if data.ai.summary && (category === 'general' || category === 'news')}
+					<AiAnswer
+						bind:this={aiAnswer}
+						search={searchUrl(data.q, category, data.page).split('?')[1]}
+						agentEnabled={data.ai.agent}
+					/>
+				{/if}
 				{#if data.error}
 					<div class="empty-state" role="alert">
 						<div class="state-icon"><Globe2 size={26} /></div>
@@ -651,6 +675,12 @@
 				enviando apenas o domínio do resultado, sem a consulta ou o IP do seu navegador. Como a
 				consulta faz parte da URL, ela pode aparecer no histórico normal do navegador.
 			</p>
+			{#if data.ai.summary}<p>
+					Ao acionar um resumo ou a pesquisa com agente, sua consulta e trechos dos resultados são
+					enviados ao provedor de IA configurado. O agente pode reformular a consulta e realizar
+					buscas adicionais. A retenção desses dados segue as políticas do provedor. Uma sessão de
+					IA usa um identificador aleatório temporário em cookie HttpOnly, sem salvar a conversa.
+				</p>{/if}
 		</div>
 	</div>
 	<div class="about-detail">

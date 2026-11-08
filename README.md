@@ -70,6 +70,7 @@ Para diagnosticar a instância diretamente, consulte `/config` para ver os mecan
 - Atalhos `/` e `Ctrl/Cmd + K`, diálogos nativos e navegação por teclado.
 - Estados de carregamento, resposta parcial, resultados vazios e falha com opção de tentar novamente.
 - Layout responsivo e respeito à preferência de movimento reduzido.
+- Resumo opcional com IA e pesquisa com agente, com referências às fontes, quando habilitados pelo operador.
 - Transições de página com a View Transitions API, entrada escalonada dos resultados, animação de diálogos e menus, feedback de hover/press e barra de progresso de navegação. Navegadores sem a API continuam navegando normalmente; movimento reduzido desativa as animações.
 
 ## Dados e privacidade
@@ -79,6 +80,8 @@ Não há analytics nem histórico de consultas mantido pela interface. Aparênci
 As quatro opções de fonte não dependem de serviços externos: sistema usa a fonte do dispositivo; Geist, Source Serif 4 e JetBrains Mono são distribuídas junto da aplicação. As preferências já salvas como `serif` ou `mono` passam a usar automaticamente as novas famílias. Source Serif 4 usa os eixos óptico e de peso; os textos dos resultados serifados têm 15 px para facilitar a leitura. Para personalizar, use o ícone de paleta no cabeçalho ou **Preferências → Aparência → Personalizar**. Os ajustes visuais são aplicados e salvos imediatamente, independentemente das preferências de pesquisa.
 
 As consultas passam pelo servidor da aplicação para a instância SearXNG informada. O processamento e os logs dessa instância dependem de seu operador. Imagens são carregadas diretamente de fontes externas, sem enviar o cabeçalho de referência. Favicons são obtidos em `/favicon?domain=…`: o servidor consulta o serviço S2 do Google com **apenas o domínio**, sem a pesquisa, os cookies ou o IP do navegador. Nenhuma URL arbitrária é acessada por esse endpoint. Os resultados e as imagens aceitam apenas URLs HTTP/HTTPS; conteúdo da API é renderizado como texto, nunca como HTML.
+
+Ao clicar em **Resumir com IA** ou **Pesquisar com agente**, o servidor envia a consulta, títulos, domínios e trechos dos resultados ao provedor de IA. O agente pode reformular a consulta e realizar buscas adicionais no SearXNG, preservando os filtros. A política de retenção e treinamento do provedor se aplica a esses dados. O nexus não persiste prompts, respostas ou raciocínio; um cookie HttpOnly/SameSite Strict com identificador aleatório, válido por até 30 minutos, mantém a sessão técnica do provedor. A sessão não contém o texto da pesquisa nem a chave.
 
 Os filtros de domínio e formato acrescentam os operadores `site:` e `filetype:` à consulta enviada, sem alterar o texto exibido na barra de pesquisa. O suporte a esses operadores e aos demais filtros depende do buscador selecionado.
 
@@ -91,6 +94,54 @@ bunx playwright install chromium
 bunx playwright test
 bun run build
 ```
+
+Os testes de navegador existentes consultam uma instância real; defina `SEARXNG_URL` no ambiente para usar a sua. Os testes novos de IA são determinísticos e não usam credenciais nem créditos reais:
+
+```sh
+bun run test:unit --run
+bun run test:ai
+```
+
+`test:ai` constrói o app, inicia o servidor de produção e simula apenas os serviços externos. Verifica o AI SDK OpenAI-compatible, resumo, ciclo de ferramentas do agente, acionamento pela página inicial, citações, bloqueio de requisições cross-origin, IA desativada, erros redigidos, ausência de configuração privada no bundle, sessão HttpOnly, layout móvel e acessibilidade.
+
+## Resumos com IA e pesquisa com agente
+
+A IA vem **desativada**. Não há chamadas automáticas em GET, renderização do servidor ou navegação: somente ações explícitas do usuário disparam o endpoint `POST /api/ai`. A pesquisa comum funciona sem chave, sem IA ou quando o provedor falha.
+
+- **Resumir com IA:** sintetiza até seis resultados da página atual e oferece referências numeradas.
+- **Pesquisar com agente:** usa tool calling do AI SDK para reformular a pergunta, realizar até três buscas no SearXNG e sintetizar uma resposta com fontes. Também pode ser iniciado junto à barra de pesquisa na página inicial.
+- Ambos estão disponíveis em **Tudo** e **Notícias**. O agente usa a primeira página das buscas e mantém idioma, pesquisa segura, período, buscador, domínio e formato aplicável.
+- O contexto é composto por **trechos dos resultados**, não páginas completas. O agente não executa código, não lê arquivos e não abre URLs arbitrárias. Citações só viram links quando correspondem a uma fonte retornada pelo servidor. O texto do modelo nunca é tratado como HTML ou Markdown executável.
+
+### Configuração privada de runtime
+
+Todas estas variáveis são declaradas com `public: false` e `static: false` em `src/env.ts`. O navegador recebe apenas duas flags de disponibilidade, nunca a chave, endpoint, nome do modelo ou limites.
+
+| Variável               | Padrão                                       | Uso                                                                                            |
+| ---------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `AI_ENABLED`           | `false`                                      | Habilita os recursos de IA; também exige uma chave válida na configuração.                     |
+| `AI_AGENT_ENABLED`     | `true`                                       | Permite desabilitar só o agente e manter resumos.                                              |
+| `AI_API_KEY`           | vazio                                        | Credencial exclusiva do servidor.                                                              |
+| `AI_BASE_URL`          | `https://opencode.ai/inference/go/openai/v1` | URL base OpenAI-compatible, sem `/chat/completions`.                                           |
+| `AI_MODEL`             | `deepseek-v4.1-flash`                        | ID do modelo.                                                                                  |
+| `AI_MAX_STEPS`         | `4`                                          | Limite de etapas do agente, de 2 a 6; no máximo três buscas e uma etapa final sem ferramentas. |
+| `AI_MAX_OUTPUT_TOKENS` | `1800`                                       | Limite de saída por chamada ao modelo, de 128 a 4096.                                          |
+
+Use HTTPS para o provedor. HTTP é aceito apenas em loopback para desenvolvimento/testes. A integração usa `ai` e `@ai-sdk/openai-compatible`, envia um User-Agent verdadeiro (`nexus/0.0.1`) e um `x-opencode-session` estável por sessão. Não há retries automáticos de inferência.
+
+No Coolify, cadastre a chave como **Secret**, exclusiva de **runtime** (desmarque buildtime), e habilite `AI_ENABLED=true` apenas no ambiente desejado. Não use prefixo `PUBLIC_`, argumentos de build, arquivos versionados, screenshots, corpo do PR ou logs para transportar credenciais. O `.env.example` mantém a chave vazia; `.env*` é ignorado pelo Git e pelo contexto Docker. O Compose passa os valores somente ao container em runtime. Não compartilhe saídas de `docker inspect`, `docker compose config` ou dumps de ambiente, que podem revelar os valores.
+
+### OpenCode Go / DeepSeek
+
+O endpoint e o modelo acima seguem a [documentação oficial do OpenCode Go](https://opencode.ai/v2/docs/go#endpoints). O DeepSeek exige que o administrador permita a região **Global** em **Settings → Privacy → Regions** no workspace. Caso contrário, a API rejeita a chamada com HTTP 400 antes de gerar texto; o app mantém a busca comum e mostra uma mensagem segura.
+
+**Condições de uso:** a documentação do Go orienta seu uso a agentes de código e tráfego equivalente. Antes de ativá-lo para pesquisas gerais em uma instalação pública, confirme com o provedor se esse uso é permitido. A aplicação não disfarça o tráfego como outro cliente. Para outro serviço autorizado a esse caso de uso, basta alterar `AI_BASE_URL`, `AI_MODEL` e a chave privada.
+
+### Limites e segurança operacional
+
+Cada operação tem prazo total de 60 segundos, cancelamento propagado ao modelo/ferramentas, no máximo três buscas adicionais no agente e uma etapa final sem ferramentas. Há limites em memória por processo: uma operação simultânea e seis inícios por minuto por IP, quatro operações simultâneas e 60 inícios por minuto no total. Respostas e erros usam `Cache-Control: no-store`; erros brutos do SDK, headers e mensagens do provedor não são logados nem devolvidos.
+
+Esses limites não substituem autenticação, orçamento no provedor ou proteção antiabuso no proxy. Para uso público ou múltiplas réplicas, adicione autenticação e um rate limiter compartilhado no gateway, configure um limite de gastos no provedor e mantenha a resolução de IPs atrás de um proxy confiável. Headers `Origin` não autenticam clientes não-browser. Os resultados externos são dados não confiáveis; as ferramentas expostas são limitadas a consultas no upstream configurado pelo operador.
 
 Os testes unitários cobrem normalização, serialização e validação de filtros, integração do servidor e segurança/cache dos favicons, inclusive falhas. Aparência tem testes de validação de preferências, inicialização antes da hidratação, migração, armazenamento corrompido/bloqueado e contraste WCAG AA das dez combinações de paleta e modo. Os testes de navegador verificam buscas **reais** (exigem acesso à API), favicons e fallback, filtros compartilháveis, View Transitions, selects por teclado, preferências, as quatro fontes, todas as paletas, modo automático, sincronização entre abas, mobile, movimento reduzido e acessibilidade com axe. Capturas são gravadas em `test-results/`.
 
