@@ -17,12 +17,20 @@ const upstream = Bun.serve({
 		const url = new URL(request.url);
 		received.push(url);
 		return Response.json({
-			results: [
-				{
-					title: 'Nexus production smoke test',
-					url: 'https://example.com/nexus',
-					content: 'Test response from the configured upstream.'
-				}
+			results:
+				url.searchParams.get('q') === 'blocked-probe'
+					? []
+					: [
+							{
+								title: 'Nexus production smoke test',
+								url: 'https://example.com/nexus',
+								content: 'Test response from the configured upstream.',
+								engines: ['bing', 'yahoo']
+							}
+						],
+			unresponsive_engines: [
+				['google cse', 'Suspended: too many requests'],
+				['duckduckgo', 'CAPTCHA']
 			]
 		});
 	}
@@ -52,7 +60,8 @@ try {
 			HOST: '127.0.0.1',
 			PORT: '0',
 			PROTOCOL_HEADER: 'x-forwarded-proto',
-			SEARXNG_URL: `http://127.0.0.1:${upstream.port}/searxng/`
+			SEARXNG_URL: `http://127.0.0.1:${upstream.port}/searxng/`,
+			SEARXNG_EXTRA_ENGINES: 'bing,yahoo'
 		},
 		stdout: 'pipe',
 		stderr: 'inherit'
@@ -114,7 +123,26 @@ try {
 	assert.equal(received[0]?.pathname, '/searxng/search');
 	assert.equal(received[0]?.searchParams.get('q'), 'production-probe');
 	assert.equal(received[0]?.searchParams.get('format'), 'json');
+	assert.equal(received[0]?.searchParams.get('categories'), 'general');
+	assert.equal(received[0]?.searchParams.get('engines'), 'bing,yahoo');
+	assert(results.includes('bing · yahoo'), 'Results must retain every contributing engine');
+	assert(results.includes('google cse (limite de requisições)'), 'Explain rate-limited engines');
+	assert(results.includes('duckduckgo (CAPTCHA)'), 'Explain CAPTCHA blocks');
 	assert(!results.includes(`127.0.0.1:${upstream.port}`), 'The private upstream URL must not leak');
+	const blocked = await request('/?q=blocked-probe&engine=google');
+	assert.equal(blocked.status, 200);
+	const blockedHtml = await blocked.text();
+	assert(blockedHtml.includes('Nenhum resultado recebido.'));
+	assert(blockedHtml.includes('Há buscadores indisponíveis nesta pesquisa.'));
+	assert(
+		!blockedHtml.includes('Tente outras palavras'),
+		'Do not mistake provider failures for a bad query'
+	);
+	assert.equal(received[1]?.searchParams.get('engines'), 'google,google cse');
+	assert(
+		!received[1]?.searchParams.has('categories'),
+		'A Google-only search must remain exclusive'
+	);
 	console.log(
 		JSON.stringify(
 			{
@@ -124,6 +152,7 @@ try {
 				staticAsset: image.status,
 				immutableAsset: asset.status,
 				search: search.status,
+				providerFailuresExplained: true,
 				configuredUpstream: received[0]?.pathname,
 				privateUrlExposed: false
 			},

@@ -382,8 +382,12 @@
 							{data.elapsed.toLocaleString('pt-BR', { maximumFractionDigits: 2 })} s</span
 						>{#if data.page > 1}<span>Página {data.page}</span>{/if}
 					</div>
-					{#if data.partial}<p class="partial-note">
-							Alguns buscadores não responderam. Exibindo os resultados disponíveis.
+					{#if data.partial}<p class="partial-note" role="status">
+							Fontes indisponíveis:
+							{data.engineFailures
+								.map(({ engine, reason }) => `${engine} (${reason})`)
+								.join(' · ')}.
+							{#if data.results.length}Exibindo os resultados das fontes que responderam.{/if}
 						</p>{/if}
 					{#if data.corrections.length}<p class="corrections">
 							Você quis dizer: {#each data.corrections as correction}<a href={searchUrl(correction)}
@@ -394,10 +398,15 @@
 					{#if !data.results.length}
 						<div class="empty-state">
 							<div class="state-icon"><Search size={26} /></div>
-							<h2>Nenhum resultado por aqui.</h2>
+							<h2>{data.partial ? 'Nenhum resultado recebido.' : 'Nenhum resultado por aqui.'}</h2>
 							<p>
-								Tente outras palavras ou uma pesquisa mais curta.{#if activeFilters.length}
-									Você também pode remover os filtros aplicados.{/if}
+								{#if data.partial}
+									Há buscadores indisponíveis nesta pesquisa. Tente novamente mais tarde ou
+									selecione outra fonte.
+								{:else}
+									Tente outras palavras ou uma pesquisa mais curta.{#if activeFilters.length}
+										Você também pode remover os filtros aplicados.{/if}
+								{/if}
 							</p>
 							{#if activeFilters.length}<a
 									class="primary-button"

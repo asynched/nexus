@@ -14,6 +14,7 @@ services:
       HOST: 0.0.0.0
       PORT: '3000'
       SEARXNG_URL: '${SEARXNG_URL:-https://search.asynched.tech/}'
+      SEARXNG_EXTRA_ENGINES: '${SEARXNG_EXTRA_ENGINES-bing,yahoo}'
     cap_drop:
       - ALL
     security_opt:

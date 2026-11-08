@@ -5,10 +5,14 @@ const environment = vi.hoisted(() => ({}) as Record<string, string>);
 vi.mock('$app/env/private', () => ({
 	get SEARXNG_URL() {
 		return environment.SEARXNG_URL;
+	},
+	get SEARXNG_EXTRA_ENGINES() {
+		return environment.SEARXNG_EXTRA_ENGINES ?? 'bing,yahoo';
 	}
 }));
 beforeEach(() => {
 	delete environment.SEARXNG_URL;
+	delete environment.SEARXNG_EXTRA_ENGINES;
 });
 
 async function run(
@@ -25,6 +29,25 @@ async function run(
 }
 
 describe('server-side SearXNG integration', () => {
+	it('adds independent sources without discarding instance defaults in general searches', async () => {
+		const { fetch } = await run('?q=Brazil');
+		const endpoint = fetch.mock.calls[0][0] as URL;
+		expect(endpoint.searchParams.get('categories')).toBe('general');
+		expect(endpoint.searchParams.get('engines')).toBe('bing,yahoo');
+	});
+	it('lets the operator override or disable extra engines at runtime', async () => {
+		for (const configured of ['bing', '']) {
+			environment.SEARXNG_EXTRA_ENGINES = configured;
+			const { fetch } = await run('?q=Brazil');
+			expect((fetch.mock.calls[0][0] as URL).searchParams.get('engines')).toBe(configured || null);
+		}
+	});
+	it('keeps explicit provider searches exclusive instead of silently adding other sources', async () => {
+		const { fetch } = await run('?q=Brazil&engine=bing');
+		const endpoint = fetch.mock.calls[0][0] as URL;
+		expect(endpoint.searchParams.get('engines')).toBe('bing');
+		expect(endpoint.searchParams.has('categories')).toBe(false);
+	});
 	it('reads the server environment URL and preserves custom proxy paths', async () => {
 		environment.SEARXNG_URL = 'http://searxng.internal:8080/private/search/';
 		const { fetch } = await run('?q=nexus&category=news');
@@ -91,7 +114,7 @@ describe('server-side SearXNG integration', () => {
 			q: 'design site:vercel.com filetype:pdf',
 			language: 'en-US',
 			safesearch: '2',
-			engines: 'google cse',
+			engines: 'google,google cse',
 			time_range: 'year'
 		});
 		expect(url.searchParams.has('categories')).toBe(false);
@@ -131,8 +154,32 @@ describe('server-side SearXNG integration', () => {
 			suggestions: ['sveltekit'],
 			corrections: ['svelte'],
 			partial: true,
+			engineFailures: [{ engine: 'brave', reason: 'tempo esgotado' }],
 			error: ''
 		});
+	});
+	it('preserves multi-provider results and explains Google/DDG failures without hiding working engines', async () => {
+		const { result } = await run(
+			'?q=Brazil',
+			vi.fn().mockResolvedValue(
+				Response.json({
+					results: [
+						{ title: 'Brazil', url: 'https://example.com/brazil', engines: ['bing', 'yahoo'] },
+						{ title: 'Brasil', url: 'https://example.org/brasil', engines: ['brave'] }
+					],
+					unresponsive_engines: [
+						['google cse', 'Suspended: too many requests'],
+						['duckduckgo', 'CAPTCHA']
+					]
+				})
+			)
+		);
+		expect(result?.results).toMatchObject([{ engines: ['bing', 'yahoo'] }, { engines: ['brave'] }]);
+		expect(result?.engineFailures).toEqual([
+			{ engine: 'google cse', reason: 'limite de requisições' },
+			{ engine: 'duckduckgo', reason: 'CAPTCHA' }
+		]);
+		expect(result?.error).toBe('');
 	});
 
 	it.each(['network', 'http', 'malformed'])(

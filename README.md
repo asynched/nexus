@@ -38,6 +38,22 @@ O padrão, quando a variável estiver ausente ou vazia, continua sendo `https://
 
 Use uma URL base HTTP(S), com prefixo de proxy opcional (por exemplo, `http://searxng:8080/` ou `https://example.com/searxng/`). Uma URL terminada em `/search` também é aceita. A instância deve permitir respostas JSON (`format=json`). URLs com credenciais, query string ou fragmento são rejeitadas; use um proxy ou configuração de rede para autenticação. O `.env` não é versionado; `.env.example` contém apenas um exemplo público.
 
+### Fontes de pesquisa e bloqueios
+
+Na categoria **Tudo**, sem filtro de buscador, o nexus consulta os mecanismos habilitados por padrão no SearXNG e acrescenta **Bing e Yahoo** à mesma requisição. Isso evita depender apenas do Brave quando Google CSE e DuckDuckGo estão bloqueados. Muitas instalações SearXNG incluem Bing e Yahoo, mas os deixam desativados nas pesquisas padrão.
+
+Para personalizar essas fontes adicionais no ambiente de runtime:
+
+```dotenv
+SEARXNG_EXTRA_ENGINES=bing,yahoo
+```
+
+O valor é uma lista de nomes de engines separados por vírgula. Defina `SEARXNG_EXTRA_ENGINES=` para respeitar somente os padrões da instância. Essas adições não afetam imagens, vídeos, notícias nem pesquisas com um buscador específico. O filtro **Google** consulta `google` e `google cse` (nas imagens, `google images` e `google cse images`), sem substituí-los silenciosamente por outros provedores.
+
+O nexus mostra as fontes indisponíveis e distingue CAPTCHA, limite de requisições, acesso negado e timeout. Esses bloqueios ocorrem entre o SearXNG e os buscadores, não no navegador: o frontend não consegue removê-los. Para restaurar Google/DuckDuckGo, revise a configuração da instância e a reputação/limitação do IP de saída, aguarde o período de suspensão ou use uma integração de API autorizada. Evite repetir consultas automaticamente, pois isso pode prolongar o bloqueio.
+
+Para diagnosticar a instância diretamente, consulte `/config` para ver os mecanismos e `/search?q=Brazil&format=json&categories=general&engines=bing,yahoo`. Compare `results[].engines` e `unresponsive_engines`; selecionar somente `engines=google,google%20cse`, sem `categories`, permite isolar a família Google.
+
 ## Recursos
 
 - Busca real em uma instância SearXNG configurável por `SEARXNG_URL`, via servidor SvelteKit.

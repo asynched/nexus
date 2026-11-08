@@ -106,7 +106,8 @@ export function filterParams(filters: SearchFilters, preferences?: Preferences):
 }
 export function engineName(engine: string, category: Category): string {
 	if (!engine) return '';
-	if (category === 'general') return engine === 'google' ? 'google cse' : engine;
+	if (category === 'general') return engine === 'google' ? 'google,google cse' : engine;
+	if (engine === 'google' && category === 'images') return 'google images,google cse images';
 	return `${engine}${engine === 'brave' ? '.' : ' '}${category}`;
 }
 export function filteredQuery(q: string, filters: SearchFilters): string {

@@ -51,7 +51,8 @@ describe('search filters', () => {
 	});
 	it('maps provider families to the real configured SearXNG engines', () => {
 		expect(engineName('brave', 'images')).toBe('brave.images');
-		expect(engineName('google', 'general')).toBe('google cse');
+		expect(engineName('google', 'general')).toBe('google,google cse');
+		expect(engineName('google', 'images')).toBe('google images,google cse images');
 		expect(engineName('duckduckgo', 'news')).toBe('duckduckgo news');
 		expect(engineName('bing', 'videos')).toBe('bing videos');
 		expect(engineName('', 'general')).toBe('');

@@ -1,7 +1,8 @@
 import { categories, normalizeResults, type Category } from '#lib/search.ts';
 import type { PageServerLoad } from './$types';
-import { SEARXNG_URL } from '$app/env/private';
+import { SEARXNG_URL, SEARXNG_EXTRA_ENGINES } from '$app/env/private';
 import { createSearchEndpoint, SearchConfigurationError } from '#lib/server/search-config.ts';
+import { engineFailures } from '#lib/server/search-status.ts';
 import {
 	allowed,
 	languageOptions,
@@ -38,7 +39,8 @@ export const load: PageServerLoad = async ({ url, fetch, cookies }) => {
 		corrections: [] as string[],
 		elapsed: 0,
 		error: '',
-		partial: false
+		partial: false,
+		engineFailures: [] as ReturnType<typeof engineFailures>
 	};
 	if (!q) return base;
 	const started = performance.now();
@@ -58,6 +60,10 @@ export const load: PageServerLoad = async ({ url, fetch, cookies }) => {
 			// Categories add their default engines. An exclusive provider must use engines alone.
 			endpoint.searchParams.delete('categories');
 			endpoint.searchParams.set('engines', engine);
+		} else if (category === 'general' && SEARXNG_EXTRA_ENGINES) {
+			// SearXNG unions explicit engines with category defaults. Keep enabled sources,
+			// but also query Bing/Yahoo, which are disabled by default on many instances.
+			endpoint.searchParams.set('engines', SEARXNG_EXTRA_ENGINES);
 		}
 		const response = await fetch(endpoint, {
 			signal: AbortSignal.timeout(20000),
@@ -66,6 +72,7 @@ export const load: PageServerLoad = async ({ url, fetch, cookies }) => {
 		if (!response.ok) throw new Error(`Search returned ${response.status}`);
 		const body = await response.json();
 		if (!Array.isArray(body.results)) throw new Error('Invalid search response');
+		const failures = engineFailures(body.unresponsive_engines);
 		return {
 			...base,
 			results: normalizeResults(body.results),
@@ -76,7 +83,8 @@ export const load: PageServerLoad = async ({ url, fetch, cookies }) => {
 				? body.corrections.filter((s: unknown): s is string => typeof s === 'string').slice(0, 3)
 				: [],
 			elapsed: (performance.now() - started) / 1000,
-			partial: Array.isArray(body.unresponsive_engines) && body.unresponsive_engines.length > 0
+			partial: failures.length > 0,
+			engineFailures: failures
 		};
 	} catch (error) {
 		return {
