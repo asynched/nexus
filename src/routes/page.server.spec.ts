@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { load } from './+page.server';
 
+vi.mock('#lib/server/ai-config.ts', () => ({
+	aiAvailability: () => ({ summary: false, agent: false })
+}));
+
 const environment = vi.hoisted(() => ({}) as Record<string, string>);
 vi.mock('$app/env/private', () => ({
 	get SEARXNG_URL() {

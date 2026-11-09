@@ -1,16 +1,11 @@
 import { categories, normalizeResults, type Category } from '#lib/search.ts';
 import type { PageServerLoad } from './$types';
 import { SEARXNG_URL, SEARXNG_EXTRA_ENGINES } from '$app/env/private';
-import { createSearchEndpoint, SearchConfigurationError } from '#lib/server/search-config.ts';
+import { SearchConfigurationError } from '#lib/server/search-config.ts';
 import { engineFailures } from '#lib/server/search-status.ts';
-import {
-	allowed,
-	languageOptions,
-	safeOptions,
-	readFilters,
-	filteredQuery,
-	engineName
-} from '#lib/filters.ts';
+import { searchSearxng } from '#lib/server/searxng.ts';
+import { aiAvailability } from '#lib/server/ai-config.ts';
+import { allowed, languageOptions, safeOptions, readFilters } from '#lib/filters.ts';
 
 export const load: PageServerLoad = async ({ url, fetch, cookies }) => {
 	const q = (url.searchParams.get('q') || '').trim().slice(0, 500);
@@ -34,6 +29,7 @@ export const load: PageServerLoad = async ({ url, fetch, cookies }) => {
 		safe,
 		filters,
 		preferences,
+		ai: aiAvailability(),
 		results: [] as ReturnType<typeof normalizeResults>,
 		suggestions: [] as string[],
 		corrections: [] as string[],
@@ -45,46 +41,15 @@ export const load: PageServerLoad = async ({ url, fetch, cookies }) => {
 	if (!q) return base;
 	const started = performance.now();
 	try {
-		const endpoint = createSearchEndpoint(SEARXNG_URL);
-		endpoint.search = new URLSearchParams({
-			q: filteredQuery(q, filters),
-			format: 'json',
-			categories: category,
-			pageno: String(page),
-			language,
-			safesearch: safe,
-			time_range: time
-		}).toString();
-		const engine = engineName(filters.engine, category);
-		if (engine) {
-			// Categories add their default engines. An exclusive provider must use engines alone.
-			endpoint.searchParams.delete('categories');
-			endpoint.searchParams.set('engines', engine);
-		} else if (category === 'general' && SEARXNG_EXTRA_ENGINES) {
-			// SearXNG unions explicit engines with category defaults. Keep enabled sources,
-			// but also query Bing/Yahoo, which are disabled by default on many instances.
-			endpoint.searchParams.set('engines', SEARXNG_EXTRA_ENGINES);
-		}
-		const response = await fetch(endpoint, {
-			signal: AbortSignal.timeout(20000),
-			headers: { Accept: 'application/json' }
-		});
-		if (!response.ok) throw new Error(`Search returned ${response.status}`);
-		const body = await response.json();
-		if (!Array.isArray(body.results)) throw new Error('Invalid search response');
-		const failures = engineFailures(body.unresponsive_engines);
+		const result = await searchSearxng(
+			{ q, category, page, filters },
+			{ url: SEARXNG_URL, extraEngines: SEARXNG_EXTRA_ENGINES },
+			fetch
+		);
 		return {
 			...base,
-			results: normalizeResults(body.results),
-			suggestions: Array.isArray(body.suggestions)
-				? body.suggestions.filter((s: unknown): s is string => typeof s === 'string').slice(0, 8)
-				: [],
-			corrections: Array.isArray(body.corrections)
-				? body.corrections.filter((s: unknown): s is string => typeof s === 'string').slice(0, 3)
-				: [],
-			elapsed: (performance.now() - started) / 1000,
-			partial: failures.length > 0,
-			engineFailures: failures
+			...result,
+			elapsed: (performance.now() - started) / 1000
 		};
 	} catch (error) {
 		return {

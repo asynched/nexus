@@ -15,6 +15,13 @@ services:
       PORT: '3000'
       SEARXNG_URL: '${SEARXNG_URL:-https://search.asynched.tech/}'
       SEARXNG_EXTRA_ENGINES: '${SEARXNG_EXTRA_ENGINES-bing,yahoo}'
+      AI_ENABLED: '${AI_ENABLED:-false}'
+      AI_AGENT_ENABLED: '${AI_AGENT_ENABLED:-true}'
+      AI_API_KEY: '${AI_API_KEY:-}'
+      AI_BASE_URL: '${AI_BASE_URL:-https://opencode.ai/inference/go/openai/v1}'
+      AI_MODEL: '${AI_MODEL:-deepseek-v4.1-flash}'
+      AI_MAX_STEPS: '${AI_MAX_STEPS:-4}'
+      AI_MAX_OUTPUT_TOKENS: '${AI_MAX_OUTPUT_TOKENS:-1800}'
     cap_drop:
       - ALL
     security_opt:
