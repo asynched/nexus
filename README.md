@@ -102,7 +102,7 @@ bun run test:unit --run
 bun run test:ai
 ```
 
-`test:ai` constrói o app, inicia o servidor de produção e simula apenas os serviços externos. Verifica o AI SDK OpenAI-compatible, resumo, ciclo de ferramentas do agente, acionamento pela página inicial, citações, bloqueio de requisições cross-origin, IA desativada, erros redigidos, ausência de configuração privada no bundle, sessão HttpOnly, layout móvel e acessibilidade.
+`test:ai` constrói o app, inicia o servidor de produção e simula apenas os serviços externos. Verifica o AI SDK OpenAI-compatible, texto visível antes do término da geração, ciclo de ferramentas do agente, acionamento pela página inicial, citações, cancelamento até o provedor, falhas no meio da transmissão, bloqueio de requisições cross-origin, IA desativada, erros redigidos, ausência de configuração privada no bundle, sessão HttpOnly, layout móvel e acessibilidade.
 
 ## Resumos com IA e pesquisa com agente
 
@@ -112,6 +112,14 @@ A IA vem **desativada**. Não há chamadas automáticas em GET, renderização d
 - **Pesquisar com agente:** usa tool calling do AI SDK para reformular a pergunta, realizar até três buscas no SearXNG e sintetizar uma resposta com fontes. Também pode ser iniciado junto à barra de pesquisa na página inicial.
 - Ambos estão disponíveis em **Tudo** e **Notícias**. O agente usa a primeira página das buscas e mantém idioma, pesquisa segura, período, buscador, domínio e formato aplicável.
 - O contexto é composto por **trechos dos resultados**, não páginas completas. O agente não executa código, não lê arquivos e não abre URLs arbitrárias. Citações só viram links quando correspondem a uma fonte retornada pelo servidor. O texto do modelo nunca é tratado como HTML ou Markdown executável.
+
+### Streaming
+
+Resumos e respostas do agente são exibidos progressivamente com `streamText` do AI SDK da Vercel. O servidor usa o protocolo SSE de UI Messages do SDK; o navegador usa `DefaultChatTransport` e `readUIMessageStream`, carregados somente quando a IA é acionada. Fontes chegam antes do texto e citações continuam funcionando mesmo quando seus caracteres chegam em fragmentos separados.
+
+O indicador permanece ativo enquanto a resposta chega, e **Cancelar IA** encerra a transmissão e aborta a chamada ao provedor. Se a conexão ou o provedor falhar depois dos primeiros trechos, o texto recebido é preservado e marcado como **incompleto**, nunca como uma resposta concluída. O raciocínio interno do modelo, metadados, mensagens brutas de ferramentas e credenciais não são transmitidos; a telemetria de inferência está desativada explicitamente.
+
+A resposta usa `Content-Type: text/event-stream`, `Cache-Control: no-store, no-transform`, `X-Accel-Buffering: no` e keep-alive SSE. Não habilite buffering/cache de SSE no proxy reverso. O streaming não elimina o tempo das buscas nem o raciocínio inicial do modelo: o texto aparece assim que o provedor começa a resposta pública.
 
 ### Configuração privada de runtime
 

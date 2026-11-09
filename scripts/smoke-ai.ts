@@ -7,6 +7,12 @@ const secret = 'nexus-ai-smoke-private-token';
 let modelCalls = 0;
 let searchCalls = 0;
 let failProvider = false;
+let pauseSummary = true;
+let finishSummary: (() => void) | undefined;
+let summaryFinished = false;
+let failDuringStream = false;
+let holdForCancel = false;
+let cancelledStreams = 0;
 const sessions = new Set<string>();
 const upstream = Bun.serve({
 	hostname: '127.0.0.1',
@@ -35,6 +41,7 @@ const upstream = Bun.serve({
 		sessions.add(session);
 		const body = await request.json();
 		assert.equal(body.model, 'deepseek-v4.1-flash');
+		assert.equal(body.stream, true);
 		assert(!JSON.stringify(body).includes(secret));
 		if (failProvider)
 			return Response.json(
@@ -45,43 +52,68 @@ const upstream = Bun.serve({
 			(message: { role: string }) => message.role === 'tool'
 		).length;
 		const callTool = body.tools && body.tool_choice !== 'none' && toolResults < 2;
-		return Response.json({
+		const base = {
 			id: `test-${modelCalls}`,
-			object: 'chat.completion',
+			object: 'chat.completion.chunk',
 			created: 1,
-			model: body.model,
-			choices: [
-				{
-					index: 0,
-					message: callTool
-						? {
-								role: 'assistant',
-								content: null,
-								tool_calls: [
-									{
-										id: `tool-${modelCalls}`,
-										type: 'function',
-										function: {
-											name: 'searchWeb',
-											arguments: JSON.stringify({
-												query: toolResults
-													? 'SvelteKit documentação oficial'
-													: 'SvelteKit framework'
-											})
-										}
+			model: body.model
+		};
+		const encoder = new TextEncoder();
+		return new Response(
+			new ReadableStream({
+				start(controller) {
+					const send = (chunk: unknown) =>
+						controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+					const delta = (value: unknown) =>
+						send({ ...base, choices: [{ index: 0, delta: value, finish_reason: null }] });
+					delta({ role: 'assistant', reasoning_content: 'mock-private-reasoning' });
+					if (callTool)
+						delta({
+							tool_calls: [
+								{
+									index: 0,
+									id: `tool-${modelCalls}`,
+									type: 'function',
+									function: {
+										name: 'searchWeb',
+										arguments: JSON.stringify({
+											query: toolResults ? 'SvelteKit documentação oficial' : 'SvelteKit framework'
+										})
 									}
-								]
-							}
-						: {
-								role: 'assistant',
-								content:
-									'SvelteKit permite criar aplicações web com Svelte [1]. Confira a documentação oficial.'
-							},
-					finish_reason: callTool ? 'tool_calls' : 'stop'
+								}
+							]
+						});
+					else delta({ content: 'SvelteKit permite criar aplicações web com Svelte [1].' });
+					if (failDuringStream) {
+						send({ error: { message: `Provider failed with ${secret}` } });
+						controller.close();
+						return;
+					}
+					const finish = () => {
+						if (!callTool) delta({ content: ' Confira a documentação oficial.' });
+						send({
+							...base,
+							choices: [{ index: 0, delta: {}, finish_reason: callTool ? 'tool_calls' : 'stop' }],
+							usage: { prompt_tokens: 50, completion_tokens: 30, total_tokens: 80 }
+						});
+						controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+						controller.close();
+					};
+					if (holdForCancel) return;
+					if (!body.tools && pauseSummary) {
+						pauseSummary = false;
+						finishSummary = () => {
+							summaryFinished = true;
+							finish();
+						};
+					} else finish();
+				},
+				cancel() {
+					cancelledStreams++;
 				}
-			],
-			usage: { prompt_tokens: 50, completion_tokens: 30, total_tokens: 80 }
-		});
+			}),
+			{ headers: { 'Content-Type': 'text/event-stream' } }
+		);
 	}
 });
 
@@ -148,6 +180,14 @@ try {
 	assert(!(await page.content()).includes(secret));
 	await page.getByRole('button', { name: 'Resumir com IA' }).click();
 	await page.getByRole('heading', { name: 'Resumo com IA' }).waitFor();
+	await expect(page.locator('.ai-text')).toContainText('SvelteKit permite criar aplicações web');
+	assert(!summaryFinished, 'Text must reach the browser before the provider finishes');
+	await expect(page.getByRole('button', { name: 'Cancelar IA' })).toBeVisible();
+	await page.screenshot({ path: 'test-results/ai-summary-streaming.png', fullPage: true, animations: 'disabled' });
+	assert(!(await page.content()).includes('mock-private-reasoning'));
+	assert(finishSummary);
+	finishSummary();
+	await expect(page.getByRole('button', { name: 'Resumir com IA' })).toBeEnabled();
 	assert.equal(modelCalls, 1);
 	assert.equal(
 		await page
@@ -157,6 +197,7 @@ try {
 	);
 	await page.getByRole('button', { name: 'Pesquisar com agente' }).click();
 	await page.getByRole('heading', { name: 'Pesquisa com agente' }).waitFor();
+	await expect(page.getByRole('button', { name: 'Resumir com IA' })).toBeEnabled();
 	await expect(page.locator('.ai-footnote')).toContainText('2 buscas realizadas');
 	assert.equal(modelCalls, 4, 'Agent should execute two searches and a final model response');
 	assert.equal(sessions.size, 1, 'Summary and agent must reuse a stable server-only session ID');
@@ -185,6 +226,7 @@ try {
 	await page.getByRole('searchbox').fill('SvelteKit');
 	await page.getByRole('button', { name: 'Pesquisar com agente' }).click();
 	await page.getByRole('heading', { name: 'Pesquisa com agente' }).waitFor();
+	await expect(page.getByRole('button', { name: 'Resumir com IA' })).toBeEnabled();
 	await expect(page.locator('.ai-footnote')).toContainText('2 buscas realizadas');
 	failProvider = true;
 	await page.getByRole('button', { name: 'Resumir com IA' }).click();
@@ -194,6 +236,19 @@ try {
 		(await page.getByRole('alert').textContent())?.includes('A busca comum continua disponível')
 	);
 	assert.equal(await page.locator('.search-result').count(), 1);
+	failProvider = false;
+	failDuringStream = true;
+	await page.getByRole('button', { name: 'Resumir com IA' }).click();
+	await expect(page.getByRole('alert')).toBeVisible();
+	await expect(page.locator('.ai-footnote')).toContainText('Resposta incompleta');
+	assert(!(await page.content()).includes(secret));
+	failDuringStream = false;
+	holdForCancel = true;
+	await page.getByRole('button', { name: 'Resumir com IA' }).click();
+	await expect(page.locator('.ai-text')).toContainText('SvelteKit permite');
+	await page.getByRole('button', { name: 'Cancelar IA' }).click();
+	await expect.poll(() => cancelledStreams).toBeGreaterThan(0);
+	await expect(page.locator('.ai-response')).toHaveCount(0);
 	const forbidden = await fetch(`${origin}/api/ai`, {
 		method: 'POST',
 		headers: {
@@ -239,6 +294,9 @@ try {
 				disabled: disabled.status,
 				crossOrigin: forbidden.status,
 				providerErrorsRedacted: true,
+				streamedBeforeCompletion: true,
+				midStreamFailure: 'partial answer marked incomplete',
+				cancellation: 'upstream cancelled',
 				mobileAndAccessibility: 'passed',
 				modelCalls,
 				searchCalls

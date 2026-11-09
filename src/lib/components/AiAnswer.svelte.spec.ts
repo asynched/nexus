@@ -2,13 +2,53 @@ import { page } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import AiAnswer from './AiAnswer.svelte';
+import { createUIMessageStreamResponse, type InferUIMessageChunk } from 'ai';
+import { AI_STREAM_ERROR, type AiUIMessage, type AiAnswer as Answer } from '#lib/ai.ts';
+
+function answerResponse(answer: Answer) {
+	return createUIMessageStreamResponse({
+		stream: new ReadableStream<InferUIMessageChunk<AiUIMessage>>({
+			start(controller) {
+				for (const chunk of [
+					{ type: 'start' },
+					{
+						type: 'data-evidence',
+						id: 'evidence',
+						data: {
+							sources: answer.sources,
+							searches: answer.searches,
+							partial: answer.partial,
+							complete: false
+						}
+					},
+					{ type: 'text-start', id: 'text' },
+					{ type: 'text-delta', id: 'text', delta: answer.text },
+					{ type: 'text-end', id: 'text' },
+					{
+						type: 'data-evidence',
+						id: 'evidence',
+						data: {
+							sources: answer.sources,
+							searches: answer.searches,
+							partial: answer.partial,
+							complete: true
+						}
+					},
+					{ type: 'finish' }
+				] satisfies InferUIMessageChunk<AiUIMessage>[])
+					controller.enqueue(chunk);
+				controller.close();
+			}
+		})
+	});
+}
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe('opt-in AI search interface', () => {
 	it('does not call AI on render; links only real citations and escapes generated HTML', async () => {
 		const request = vi.fn().mockResolvedValue(
-			Response.json({
+			answerResponse({
 				text: 'Resposta [1]. <img src=x onerror=alert(1)> [99]',
 				searches: 1,
 				partial: false,
@@ -38,16 +78,14 @@ describe('opt-in AI search interface', () => {
 	it('offers an agent that calls the dedicated mode and displays its research count', async () => {
 		vi.stubGlobal(
 			'fetch',
-			vi
-				.fn()
-				.mockResolvedValue(
-					Response.json({
-						text: 'Conclusão [1].',
-						searches: 2,
-						partial: true,
-						sources: [{ id: 1, title: 'Fonte', url: 'https://example.com', domain: 'example.com' }]
-					})
-				)
+			vi.fn().mockResolvedValue(
+				answerResponse({
+					text: 'Conclusão [1].',
+					searches: 2,
+					partial: true,
+					sources: [{ id: 1, title: 'Fonte', url: 'https://example.com', domain: 'example.com' }]
+				})
+			)
 		);
 		render(AiAnswer, { search: 'q=pesquisa', agentEnabled: true });
 		await page.getByRole('button', { name: 'Pesquisar com agente' }).click();
@@ -88,12 +126,72 @@ describe('opt-in AI search interface', () => {
 		render(AiAnswer, { search: 'q=test', agentEnabled: true });
 		await page.getByRole('button', { name: 'Resumir com IA' }).click();
 		await expect.element(page.getByRole('status')).toBeVisible();
+		await vi.waitFor(() => expect(signal).toBeDefined());
 		await page.getByRole('button', { name: 'Cancelar IA' }).click();
 		expect(signal?.aborted).toBe(true);
-		resolve(Response.json({ text: 'Stale answer', sources: [], searches: 1, partial: false }));
+		resolve(answerResponse({ text: 'Stale answer', sources: [], searches: 1, partial: false }));
 		await expect
 			.element(page.getByRole('heading', { name: 'Resumo com IA' }))
 			.not.toBeInTheDocument();
 		await expect.element(page.getByRole('status')).not.toBeInTheDocument();
 	});
+	it('renders tokens and split citations before the response is finished', async () => {
+		let send!: (chunk: InferUIMessageChunk<AiUIMessage>) => void;
+		let close!: () => void;
+		const stream = new ReadableStream<InferUIMessageChunk<AiUIMessage>>({
+			start(controller) {
+				send = (chunk) => controller.enqueue(chunk);
+				close = () => controller.close();
+			}
+		});
+		vi.stubGlobal('fetch', vi.fn().mockResolvedValue(createUIMessageStreamResponse({ stream })));
+		render(AiAnswer, { search: 'q=test', agentEnabled: true });
+		await page.getByRole('button', { name: 'Resumir com IA' }).click();
+		const evidence = {
+			sources: [{ id: 1, title: 'Fonte', url: 'https://example.com', domain: 'example.com' }],
+			searches: 1,
+			partial: false,
+			complete: false
+		};
+		send({ type: 'start' });
+		send({ type: 'data-evidence', id: 'evidence', data: evidence });
+		send({ type: 'text-start', id: 'text' });
+		send({ type: 'text-delta', id: 'text', delta: 'Resposta parcial [' });
+		await expect.element(page.getByText('Resposta parcial [', { exact: true })).toBeVisible();
+		await expect.element(page.getByRole('button', { name: 'Cancelar IA' })).toBeVisible();
+		await expect.element(page.getByText('Resposta em andamento.', { exact: false })).toBeVisible();
+		send({ type: 'text-delta', id: 'text', delta: '1].' });
+		await expect.element(page.getByRole('link', { name: 'Fonte 1: Fonte' })).toBeVisible();
+		send({ type: 'text-end', id: 'text' });
+		send({ type: 'data-evidence', id: 'evidence', data: { ...evidence, complete: true } });
+		send({ type: 'finish' });
+		close();
+		await expect.element(page.getByRole('button', { name: 'Resumir com IA' })).toBeEnabled();
+	});
+	it.each(['provider-error', 'truncated'])(
+		'keeps partial text visibly incomplete after %s',
+		async (failure) => {
+			const stream = new ReadableStream<InferUIMessageChunk<AiUIMessage>>({
+				start(controller) {
+					controller.enqueue({ type: 'start' });
+					controller.enqueue({
+						type: 'data-evidence',
+						id: 'evidence',
+						data: { sources: [], searches: 1, partial: false, complete: false }
+					});
+					controller.enqueue({ type: 'text-start', id: 'text' });
+					controller.enqueue({ type: 'text-delta', id: 'text', delta: 'Texto incompleto' });
+					if (failure === 'provider-error')
+						controller.enqueue({ type: 'error', errorText: AI_STREAM_ERROR });
+					controller.close();
+				}
+			});
+			vi.stubGlobal('fetch', vi.fn().mockResolvedValue(createUIMessageStreamResponse({ stream })));
+			render(AiAnswer, { search: 'q=test', agentEnabled: true });
+			await page.getByRole('button', { name: 'Resumir com IA' }).click();
+			await expect.element(page.getByRole('alert')).toBeVisible();
+			await expect.element(page.getByText('Texto incompleto', { exact: true })).toBeVisible();
+			await expect.element(page.getByText('Resposta incompleta.', { exact: false })).toBeVisible();
+		}
+	);
 });

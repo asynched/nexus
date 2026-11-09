@@ -64,6 +64,7 @@
 		if (!data.q) homeFilters = { ...data.filters };
 	});
 	let newTab = $state(false);
+	let mounted = $state(false);
 	let newTabDraft = $state(false);
 	let saving = $state(false);
 	let preferenceError = $state('');
@@ -77,6 +78,7 @@
 	const busy = $derived(!!navigating.to?.url.searchParams.get('q'));
 
 	onMount(() => {
+		mounted = true;
 		newTab = document.cookie.split('; ').includes('newtab=1');
 	});
 
@@ -303,7 +305,7 @@
 					>
 				</div>
 				{#if data.ai.agent && (category === 'general' || category === 'news')}
-					<button class="home-agent-button" onclick={startAgentSearch} disabled={busy}
+					<button class="home-agent-button" onclick={startAgentSearch} disabled={busy || !mounted}
 						>Pesquisar com agente <ArrowUpRight size={13} /></button
 					>
 					<small class="home-agent-note">Envia a consulta e trechos ao provedor de IA.</small>

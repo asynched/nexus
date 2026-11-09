@@ -1,9 +1,12 @@
 import { z } from 'zod';
+import { createUIMessageStream, createUIMessageStreamResponse } from 'ai';
+import { AI_STREAM_ERROR, AI_TIMEOUT_ERROR, type AiUIMessage } from '#lib/ai.ts';
 import { AI_ENABLED, SEARXNG_URL, SEARXNG_EXTRA_ENGINES } from '$app/env/private';
 import { getAiConfig } from '#lib/server/ai-config.ts';
-import { generateSearchAnswer } from '#lib/server/ai-search.ts';
+import { streamSearchAnswer } from '#lib/server/ai-search.ts';
 import { aiLimiter } from '#lib/server/ai-limit.ts';
 import { readFilters, allowed, languageOptions, safeOptions } from '#lib/filters.ts';
+import type { SearchInput } from '#lib/server/searxng.ts';
 import type { RequestHandler } from './$types';
 
 const schema = z
@@ -73,6 +76,14 @@ export const POST: RequestHandler = async ({ request, url, cookies, fetch, getCl
 			429
 		);
 	const deadline = AbortSignal.timeout(60000);
+	const disconnected = new AbortController();
+	let released = false;
+	const releaseOnce = () => {
+		if (!released) {
+			released = true;
+			release();
+		}
+	};
 	try {
 		let session = cookies.get('nexus-ai-session');
 		if (!session || !/^[a-f0-9-]{36}$/i.test(session)) {
@@ -89,35 +100,60 @@ export const POST: RequestHandler = async ({ request, url, cookies, fetch, getCl
 			language: allowed(cookies.get('language'), languageOptions, 'all'),
 			safe: allowed(cookies.get('safesearch'), safeOptions, '1')
 		};
-		const answer = await generateSearchAnswer({
-			mode: body.mode,
-			input: {
-				q,
-				category,
-				page:
-					body.mode === 'agent'
-						? 1
-						: Math.min(100, Math.max(1, Math.floor(Number(params.get('pageno')) || 1))),
-				filters: readFilters(params, preferences, category)
+		const input: SearchInput = {
+			q,
+			category,
+			page:
+				body.mode === 'agent'
+					? 1
+					: Math.min(100, Math.max(1, Math.floor(Number(params.get('pageno')) || 1))),
+			filters: readFilters(params, preferences, category)
+		};
+		const stream = createUIMessageStream<AiUIMessage>({
+			execute: async ({ writer }) => {
+				writer.write({ type: 'start' });
+				try {
+					await streamSearchAnswer({
+						mode: body.mode,
+						input,
+						connection: { url: SEARXNG_URL, extraEngines: SEARXNG_EXTRA_ENGINES },
+						config,
+						fetcher: fetch,
+						session,
+						onChunk: (chunk) => writer.write(chunk),
+						signal: AbortSignal.any([request.signal, deadline, disconnected.signal])
+					});
+					writer.write({ type: 'finish' });
+				} finally {
+					releaseOnce();
+				}
 			},
-			connection: { url: SEARXNG_URL, extraEngines: SEARXNG_EXTRA_ENGINES },
-			config,
-			fetcher: fetch,
-			session,
-			signal: AbortSignal.any([request.signal, deadline])
+			// SDK errors may contain provider bodies/credentials. Send only fixed messages.
+			onError: () => (deadline.aborted ? AI_TIMEOUT_ERROR : AI_STREAM_ERROR)
 		});
-		return reply(answer);
+		const reader = stream.getReader();
+		const cancellable = new ReadableStream({
+			async pull(controller) {
+				const { value, done } = await reader.read();
+				if (done) controller.close();
+				else controller.enqueue(value);
+			},
+			async cancel() {
+				disconnected.abort();
+				await reader.cancel();
+			}
+		});
+		return createUIMessageStreamResponse({
+			stream: cancellable,
+			keepAliveMs: 10000,
+			headers: { 'Cache-Control': 'no-store, no-transform', 'X-Accel-Buffering': 'no' }
+		});
 	} catch {
+		disconnected.abort();
+		releaseOnce();
 		if (request.signal.aborted) return reply({ error: 'Pesquisa cancelada.' }, 499);
 		if (deadline.aborted) return reply({ error: 'A IA demorou demais. Tente novamente.' }, 504);
 		// SDK errors can contain API keys, headers and provider bodies. Never log or serialize them.
-		return reply(
-			{
-				error: 'Não foi possível gerar uma resposta com fontes. A busca comum continua disponível.'
-			},
-			502
-		);
-	} finally {
-		release();
+		return reply({ error: AI_STREAM_ERROR }, 502);
 	}
 };

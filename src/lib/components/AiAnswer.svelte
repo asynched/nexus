@@ -1,13 +1,17 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { LoaderCircle, X, ArrowUpRight } from '@lucide/svelte';
-	import { citationParts, type AiAnswer, type AiMode } from '#lib/ai.ts';
+	import { citationParts, AI_STREAM_ERROR, type AiAnswer, type AiMode } from '#lib/ai.ts';
 
 	let { search, agentEnabled }: { search: string; agentEnabled: boolean } = $props();
 	let answer = $state<AiAnswer | null>(null);
 	let pending = $state(false);
 	let error = $state('');
 	let mode = $state<AiMode>('summary');
+	let ready = $state(false);
+	onMount(() => {
+		ready = true;
+	});
 	let controller: AbortController | undefined;
 	let generation = 0;
 
@@ -31,24 +35,27 @@
 		pending = true;
 		controller = new AbortController();
 		const request = generation;
+		const signal = controller.signal;
 		try {
-			const response = await fetch('/api/ai', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ mode, search }),
-				signal: controller.signal
+			// Keep the SDK's client transport out of the ordinary search's initial bundle.
+			const { readSearchAnswer } = await import('#lib/ai-stream.ts').catch(() => {
+				throw new Error(AI_STREAM_ERROR);
 			});
-			const body = await response.json();
-			if (request !== generation) return;
-			if (!response.ok) {
-				error =
-					typeof body.error === 'string' ? body.error : 'A IA não respondeu. Tente novamente.';
-				return;
-			}
-			answer = body;
-		} catch {
+			if (request !== generation || signal.aborted) return;
+			await readSearchAnswer({
+				mode,
+				search,
+				signal,
+				onUpdate: (update) => {
+					if (request === generation) answer = update;
+				}
+			});
+		} catch (failure) {
 			if (request === generation && !controller?.signal.aborted)
-				error = 'A IA não respondeu. A busca comum continua disponível.';
+				error =
+					failure instanceof Error
+						? failure.message
+						: 'A IA não respondeu. A busca comum continua disponível.';
 		} finally {
 			if (request === generation) pending = false;
 		}
@@ -57,11 +64,13 @@
 
 <section class="ai-panel" aria-label="Assistente de pesquisa">
 	<div class="ai-actions">
-		<button class="ai-action" onclick={() => run('summary')} disabled={pending}
+		<button class="ai-action" onclick={() => run('summary')} disabled={pending || !ready}
 			>Resumir com IA</button
 		>
-		{#if agentEnabled}<button class="ai-action" onclick={() => run('agent')} disabled={pending}
-				>Pesquisar com agente</button
+		{#if agentEnabled}<button
+				class="ai-action"
+				onclick={() => run('agent')}
+				disabled={pending || !ready}>Pesquisar com agente</button
 			>{/if}
 		{#if pending || answer || error}<button
 				class="ai-close"
@@ -74,14 +83,18 @@
 	</p>
 	{#if pending}
 		<p class="ai-progress" role="status">
-			<LoaderCircle size={16} class="spin" />{mode === 'agent'
-				? 'O agente está consultando fontes e comparando resultados…'
-				: 'Preparando um resumo dos resultados…'}
+			<LoaderCircle size={16} class="spin" />{answer?.text
+				? 'Recebendo resposta…'
+				: mode === 'agent'
+					? 'O agente está consultando fontes e comparando resultados…'
+					: 'Preparando um resumo dos resultados…'}
 		</p>
-	{:else if error}
+	{/if}
+	{#if error}
 		<p class="ai-error" role="alert">{error}</p>
-	{:else if answer}
-		<div class="ai-response">
+	{/if}
+	{#if answer?.text}
+		<div class="ai-response" aria-busy={pending}>
 			<h2>{mode === 'agent' ? 'Pesquisa com agente' : 'Resumo com IA'}</h2>
 			<div class="ai-text">
 				{#each citationParts(answer.text, answer.sources) as part}{#if part.source}<a
@@ -100,7 +113,9 @@
 					</li>{/each}
 			</ol>
 			<p class="ai-footnote">
-				Gerado por IA a partir de trechos, não de páginas completas. Confira as fontes.{#if mode === 'agent'}
+				{#if pending}Resposta em andamento. Confira as fontes.{:else if error}Resposta incompleta.
+					Confira as fontes.{:else}Gerado por IA a partir de trechos, não de páginas completas.
+					Confira as fontes.{/if}{#if mode === 'agent'}
 					{' '}{answer.searches}
 					{answer.searches === 1
 						? 'busca realizada'

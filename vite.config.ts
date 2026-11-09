@@ -5,6 +5,9 @@ import adapter from '@sveltejs/adapter-bun';
 import { sveltekit } from '@sveltejs/kit/vite';
 
 export default defineConfig({
+	// The SDK transport is lazy-loaded on the first AI action. Prebundle it in dev
+	// so dependency discovery does not reload the page during an active stream.
+	optimizeDeps: { include: ['ai'] },
 	plugins: [
 		tailwindcss(),
 		sveltekit({

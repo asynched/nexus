@@ -1,7 +1,7 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
-import { generateText, isStepCount, tool } from 'ai';
+import { streamText, isStepCount, tool, type InferUIMessageChunk } from 'ai';
 import { z } from 'zod';
-import type { AiAnswer, AiMode, AiSource } from '#lib/ai.ts';
+import type { AiAnswer, AiMode, AiSource, AiUIMessage } from '#lib/ai.ts';
 import type { SearchResult } from '#lib/search.ts';
 import {
 	searchSearxng,
@@ -21,7 +21,7 @@ Use texto simples, sem HTML, Markdown ou URLs: as fontes são vinculadas pela in
 Na pesquisa com agente, use searchWeb para verificar a pergunta e reformule consultas quando necessário.
 Não repita buscas idênticas. Ao atingir o limite de buscas, conclua com as evidências disponíveis.`;
 
-export async function generateSearchAnswer(options: {
+export async function streamSearchAnswer(options: {
 	mode: AiMode;
 	input: SearchInput;
 	connection: SearchConnection;
@@ -29,6 +29,7 @@ export async function generateSearchAnswer(options: {
 	signal: AbortSignal;
 	session: string;
 	fetcher?: SearchFetcher;
+	onChunk?: (chunk: InferUIMessageChunk<AiUIMessage>) => void;
 }): Promise<AiAnswer> {
 	const { config, signal, input, mode } = options;
 	const provider = createOpenAICompatible({
@@ -51,6 +52,12 @@ export async function generateSearchAnswer(options: {
 	const queries = new Map<string, Awaited<ReturnType<typeof evidence>>>();
 	let partial = false;
 	const maxSearches = Math.min(3, config.maxSteps - 1);
+	const emitEvidence = (complete = false) =>
+		options.onChunk?.({
+			type: 'data-evidence',
+			id: 'evidence',
+			data: { sources: [...sources], searches: queries.size, partial, complete }
+		});
 
 	function excerpts(results: SearchResult[]) {
 		return results.slice(0, 6).flatMap((result) => {
@@ -85,21 +92,26 @@ export async function generateSearchAnswer(options: {
 			signal
 		);
 		partial ||= result.partial;
-		return { results: excerpts(result.results), partial: result.partial };
+		const found = { results: excerpts(result.results), partial: result.partial };
+		emitEvidence();
+		return found;
 	}
 	const common = {
 		model: provider(config.model),
 		system: instructions,
 		maxOutputTokens: config.maxOutputTokens,
 		maxRetries: 0,
-		abortSignal: signal
+		abortSignal: signal,
+		onError: () => {},
+		telemetry: { isEnabled: false, recordInputs: false, recordOutputs: false }
 	};
-	let text: string;
+	let response;
 	if (mode === 'summary') {
 		const found = await evidence(input.q);
 		queries.set(input.q, found);
 		if (!found.results.length) throw new Error('No search evidence');
-		const response = await generateText({
+		emitEvidence();
+		response = streamText({
 			...common,
 			prompt: JSON.stringify({
 				task: 'Resuma os resultados desta página em até 3 parágrafos.',
@@ -107,9 +119,8 @@ export async function generateSearchAnswer(options: {
 				evidence: found
 			})
 		});
-		text = response.text;
 	} else {
-		const response = await generateText({
+		response = streamText({
 			...common,
 			prompt: JSON.stringify({
 				task: 'Pesquise a pergunta e sintetize uma resposta com referências.',
@@ -136,6 +147,7 @@ export async function generateSearchAnswer(options: {
 							return found;
 						} catch {
 							partial = true;
+							emitEvidence();
 							return { results: [], error: 'A pesquisa não respondeu. Não invente resultados.' };
 						}
 					}
@@ -151,9 +163,42 @@ export async function generateSearchAnswer(options: {
 							: ('auto' as const)
 			})
 		});
-		text = response.text;
 	}
-	if (!text.trim() || !sources.length) throw new Error('No grounded answer');
+	let text = '';
+	let step = 0;
+	let textId = '';
+	let textOpen = false;
+	let finished = false;
+	let truncated = false;
+	for await (const chunk of response.fullStream) {
+		signal.throwIfAborted();
+		if (chunk.type === 'error') throw chunk.error;
+		if (chunk.type === 'abort') throw new Error('Generation aborted');
+		if (chunk.type === 'finish') finished = chunk.finishReason === 'stop';
+		if (chunk.type === 'start-step') {
+			text = '';
+			textId = `answer-${step++}`;
+		}
+		if (chunk.type === 'text-delta' && sources.length) {
+			const delta = chunk.text.slice(0, Math.max(0, 20000 - text.length));
+			truncated ||= delta.length !== chunk.text.length;
+			if (!delta) continue;
+			if (!textOpen) {
+				options.onChunk?.({ type: 'text-start', id: textId });
+				textOpen = true;
+			}
+			text += delta;
+			options.onChunk?.({ type: 'text-delta', id: textId, delta });
+		}
+		if (chunk.type === 'finish-step' && textOpen) {
+			options.onChunk?.({ type: 'text-end', id: textId });
+			textOpen = false;
+		}
+	}
+	signal.throwIfAborted();
+	if (!finished || truncated || !text.trim() || !sources.length)
+		throw new Error('No complete grounded answer');
+	emitEvidence(true);
 	// No provider metadata, raw prompts, reasoning traces or request headers leave the server.
 	return { text: text.trim().slice(0, 20000), sources, searches: queries.size, partial };
 }

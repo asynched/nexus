@@ -16,7 +16,7 @@ vi.mock('$app/env/private', () => ({
 	SEARXNG_URL: 'https://search.internal/',
 	SEARXNG_EXTRA_ENGINES: 'bing,yahoo'
 }));
-vi.mock('#lib/server/ai-search.ts', () => ({ generateSearchAnswer: mocks.generate }));
+vi.mock('#lib/server/ai-search.ts', () => ({ streamSearchAnswer: mocks.generate }));
 vi.mock('#lib/server/ai-config.ts', () => ({ getAiConfig: mocks.config }));
 vi.mock('#lib/server/ai-limit.ts', () => ({ aiLimiter: { acquire: mocks.acquire } }));
 
@@ -63,7 +63,9 @@ describe('private AI POST endpoint', () => {
 	it('requires an explicit same-origin JSON request and never exposes server configuration', async () => {
 		const { response, cookies } = await run();
 		expect(response.status).toBe(200);
-		expect(response.headers.get('cache-control')).toBe('no-store');
+		expect(response.headers.get('cache-control')).toContain('no-store');
+		expect(response.headers.get('content-type')).toContain('text/event-stream');
+		expect(response.headers.get('x-accel-buffering')).toBe('no');
 		expect(await response.text()).not.toContain('private-test-key');
 		expect(cookies.set).toHaveBeenCalledWith(
 			'nexus-ai-session',
@@ -120,10 +122,26 @@ describe('private AI POST endpoint', () => {
 			new Error('Authorization: Bearer private-test-key at https://internal-provider/')
 		);
 		const { response } = await run();
-		expect(response.status).toBe(502);
+		expect(response.status).toBe(200);
 		const text = await response.text();
+		expect(text).toContain('"type":"error"');
+		expect(text).toContain('A busca comum continua disponível');
 		expect(text).not.toContain('private-test-key');
 		expect(text).not.toContain('internal-provider');
 		expect(mocks.release).toHaveBeenCalledOnce();
+	});
+	it('keeps the concurrency slot until streaming stops and cancels upstream on disconnect', async () => {
+		let signal: AbortSignal | undefined;
+		mocks.generate.mockImplementation((options) => {
+			signal = options.signal;
+			return new Promise((_resolve, reject) =>
+				options.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+			);
+		});
+		const { response } = await run();
+		expect(mocks.release).not.toHaveBeenCalled();
+		await response.body!.cancel();
+		await vi.waitFor(() => expect(mocks.release).toHaveBeenCalledOnce());
+		expect(signal?.aborted).toBe(true);
 	});
 });
